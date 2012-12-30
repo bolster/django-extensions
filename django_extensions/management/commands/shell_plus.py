@@ -1,26 +1,30 @@
 import os
-from django.core.management.base import NoArgsCommand
-from django_extensions.management.shells import import_objects
-from optparse import make_option
 import time
+from optparse import make_option
+
+from django.core.management.base import NoArgsCommand
+
+from django_extensions.management.shells import import_objects
 
 
 class Command(NoArgsCommand):
     option_list = NoArgsCommand.option_list + (
-        make_option('--ipython', action='store_true', dest='ipython',
-            help='Tells Django to use IPython, not BPython.'),
-        make_option('--notebook', action='store_true', dest='notebook',
-            help='Tells Django to use IPython Notebook.'),
         make_option('--plain', action='store_true', dest='plain',
-            help='Tells Django to use plain Python, not BPython nor IPython.'),
+                    help='Tells Django to use plain Python, not BPython nor IPython.'),
+        make_option('--bpython', action='store_true', dest='bpython',
+                    help='Tells Django to use BPython, not IPython.'),
+        make_option('--ipython', action='store_true', dest='ipython',
+                    help='Tells Django to use IPython, not BPython.'),
+        make_option('--notebook', action='store_true', dest='notebook',
+                    help='Tells Django to use IPython Notebook.'),
         make_option('--no-pythonrc', action='store_true', dest='no_pythonrc',
-            help='Tells Django to use plain Python, not IPython.'),
+                    help='Tells Django not to execute PYTHONSTARTUP file'),
         make_option('--print-sql', action='store_true', default=False,
-            help="Print SQL queries as they're executed"),
+                    help="Print SQL queries as they're executed"),
         make_option('--dont-load', action='append', dest='dont_load', default=[],
-            help='Ignore autoloading of some apps/models. Can be used several times.'),
+                    help='Ignore autoloading of some apps/models. Can be used several times.'),
         make_option('--quiet-load', action='store_true', default=False, dest='quiet_load',
-            help='Do not display loaded models messages'),
+                    help='Do not display loaded models messages'),
     )
     help = "Like the 'shell' command but autoloads the models of all installed Django apps."
 
@@ -28,17 +32,19 @@ class Command(NoArgsCommand):
 
     def handle_noargs(self, **options):
         use_notebook = options.get('notebook', False)
-        use_ipython = options.get('ipython', use_notebook)
+        use_ipython = options.get('ipython', False)
+        use_bpython = options.get('bpython', False)
         use_plain = options.get('plain', False)
         use_pythonrc = not options.get('no_pythonrc', True)
 
         if options.get("print_sql", False):
             # Code from http://gist.github.com/118990
             from django.db.backends import util
+            sqlparse = None
             try:
                 import sqlparse
             except ImportError:
-                sqlparse = None
+                pass
 
             class PrintQueryWrapper(util.CursorDebugWrapper):
                 def execute(self, sql, params=()):
@@ -46,8 +52,8 @@ class Command(NoArgsCommand):
                     try:
                         return self.cursor.execute(sql, params)
                     finally:
-                        raw_sql = self.db.ops.last_executed_query(self.cursor, sql, params)
                         execution_time = time.time() - starttime
+                        raw_sql = self.db.ops.last_executed_query(self.cursor, sql, params)
                         if sqlparse:
                             print sqlparse.format(raw_sql, reindent=True)
                         else:
@@ -58,51 +64,15 @@ class Command(NoArgsCommand):
 
             util.CursorDebugWrapper = PrintQueryWrapper
 
-        # Set up a dictionary to serve as the environment for the shell, so
-        # that tab completion works on objects that are imported at runtime.
-        # See ticket 5082.
-        try:
-            if use_plain:
-                # Don't bother loading B/IPython, because the user wants plain Python.
-                raise ImportError
-            try:
-                if use_ipython:
-                    # User wants IPython
-                    raise ImportError
-                from bpython import embed
-                imported_objects = import_objects(options, self.style)
-                embed(imported_objects)
-            except ImportError:
-                try:
-                    if use_notebook:
-                        from django.conf import settings
-                        from IPython.frontend.html.notebook import notebookapp
-                        app = notebookapp.NotebookApp.instance()
-                        ipython_arguments = getattr(
-                            settings,
-                            'IPYTHON_ARGUMENTS',
-                            ['--ext',
-                             'django_extensions.management.notebook_extension'])
-                        app.initialize(ipython_arguments)
-                        app.start()
-                    else:
-                        from IPython import embed
-                        imported_objects = import_objects(options, self.style)
-                        embed(user_ns=imported_objects)
-                except ImportError:
-                    # IPython < 0.11
-                    # Explicitly pass an empty list as arguments, because otherwise
-                    # IPython would use sys.argv from this script.
-                    # Notebook not supported for IPython < 0.11.
-                    try:
-                        from IPython.Shell import IPShell
-                        imported_objects = import_objects(options, self.style)
-                        shell = IPShell(argv=[], user_ns=imported_objects)
-                        shell.mainloop()
-                    except ImportError:
-                        # IPython not found at all, raise ImportError
-                        raise
-        except ImportError:
+        def run_notebook():
+            from django.conf import settings
+            from IPython.frontend.html.notebook import notebookapp
+            app = notebookapp.NotebookApp.instance()
+            ipython_arguments = getattr(settings, 'IPYTHON_ARGUMENTS', ['--ext', 'django_extensions.management.notebook_extension'])
+            app.initialize(ipython_arguments)
+            app.start()
+
+        def run_plain():
             # Using normal Python shell
             import code
             imported_objects = import_objects(options, self.style)
@@ -128,5 +98,47 @@ class Command(NoArgsCommand):
                     except NameError:
                         pass
                 # This will import .pythonrc.py as a side-effect
-                import user
+                import user  # NOQA
             code.interact(local=imported_objects)
+
+        def run_bpython():
+            from bpython import embed
+            imported_objects = import_objects(options, self.style)
+            embed(imported_objects)
+
+        def run_ipython():
+            try:
+                from IPython import embed
+                imported_objects = import_objects(options, self.style)
+                embed(user_ns=imported_objects)
+            except ImportError:
+                # IPython < 0.11
+                # Explicitly pass an empty list as arguments, because otherwise
+                # IPython would use sys.argv from this script.
+                # Notebook not supported for IPython < 0.11.
+                from IPython.Shell import IPShell
+                imported_objects = import_objects(options, self.style)
+                shell = IPShell(argv=[], user_ns=imported_objects)
+                shell.mainloop()
+
+        if use_notebook:
+            run_notebook()
+        elif use_plain:
+            run_plain()
+        elif use_ipython:
+            run_ipython()
+        elif use_bpython:
+            run_bpython()
+        else:
+            for func in (run_bpython, run_ipython, run_plain):
+                try:
+                    func()
+                except ImportError:
+                    continue
+                else:
+                    break
+            else:
+                import traceback
+                traceback.print_exc()
+                print self.style.ERROR("Could not load any interactive Python environment.")
+
